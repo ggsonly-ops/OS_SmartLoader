@@ -291,3 +291,37 @@ static void reset_state(void) {
     page_allocs = 0;
     PAGE_SIZE = (PAGE_SIZE == 0) ? sysconf(_SC_PAGESIZE) : PAGE_SIZE;
 }
+
+/* Print stats summary (same format you used in main) */
+static void report_stats(void) {
+    unsigned long frag_bytes = compute_internal_frag_bytes();
+    double frag_kb = ((double)frag_bytes) / 1024.0;
+    unsigned long rounded_kb = (frag_bytes + 1023) / 1024;
+
+    printf("Page faults: %lu\n", page_faults);
+    printf("Page allocations: %lu\n", page_allocs);
+    printf("Internal fragmentation: %.2fKB (%lu bytes) [rounded KB: %lu]\n",
+           frag_kb, frag_bytes, rounded_kb);
+}
+
+
+/* cleanup_and_return: closes and frees resources and returns the provided code */
+static int cleanup_and_return(int code) {
+    /* unmap pages */
+    unmap_mapped_pages();
+
+    /* close/free */
+    close_elf_fd();
+    free_phdrs();
+    free_segments();
+    free_mapped_pages();
+
+    reset_state();
+
+    return code;
+}
+
+static int cleanup_and_exit(void) {
+    return cleanup_and_return(0);
+}
+
