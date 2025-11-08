@@ -339,3 +339,27 @@ int main(int argc, char **argv) {
     if (elf_fd < 0) { fatal_perror("open"); }
 
     load_elf_headers(elf_path);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = segv_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    if (sigaction(SIGSEGV, &sa, NULL) != 0) { fatal_perror("sigaction"); }
+
+    uintptr_t entry = ehdr.e_entry;
+    int (*entry_fn)(void) = (int (*)(void))entry;
+    int ret = entry_fn();
+
+    unsigned long frag_bytes = compute_internal_frag_bytes();
+    double frag_kb = ((double)frag_bytes) / 1024.0;
+    unsigned long rounded_kb = (frag_bytes + 1023) / 1024;
+
+    printf("result: %d\n", ret);
+    printf("Page faults: %lu\n", page_faults);
+    printf("Page allocations: %lu\n", page_allocs);
+    printf("Internal fragmentation: %.2fKB (%lu bytes) [rounded KB: %lu]\n",
+           frag_kb, frag_bytes, rounded_kb);
+
+    cleanup_and_exit();
+    return 0;
+}
