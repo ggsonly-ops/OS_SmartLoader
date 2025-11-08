@@ -79,3 +79,76 @@ static int find_mapped_page(void *page_addr) {
     }
     return -1;
 }
+
+/* Find the loadable segment index that contains the given address (virtual) */
+static int find_segment_for_addr(uint32_t addr) {
+    for (int i = 0; i < seg_count; ++i) {
+        uint32_t start = segments[i].p_vaddr;
+        uint32_t end = segments[i].p_vaddr + segments[i].p_memsz;
+        if (addr >= start && addr < end) return i;
+    }
+    return -1;
+}
+
+/* Convert ELF p_flags to mprotect flags */
+static int elf_flags_to_prot(uint32_t flags) {
+    int prot = 0;
+    if (flags & PF_R) prot |= PROT_READ;
+    if (flags & PF_W) prot |= PROT_WRITE;
+    if (flags & PF_X) prot |= PROT_EXEC;
+    return prot;
+}
+
+/* SIGSEGV handler with correct overlap math */
+static void segv_handler(int sig, siginfo_t *si, void *unused) {
+    (void)sig; (void)unused;
+    ++page_faults;
+
+    void *fault_addr_void = si->si_addr;
+    uintptr_t fault_addr = (uintptr_t)fault_addr_void;
+    uintptr_t page_start = fault_addr & ~(PAGE_SIZE - 1);
+    uintptr_t page_end = page_start + PAGE_SIZE;
+
+    int seg_idx = find_segment_for_addr((uint32_t)fault_addr);
+    if (seg_idx < 0) {
+        fprintf(stderr, "Segfault at %p is outside any PT_LOAD segment. Exiting.\n", fault_addr_void);
+        _exit(1);
+    }
+
+    if (find_mapped_page((void*)page_start) != -1) {
+        fprintf(stderr, "Protection fault at %p on already-mapped page. Exiting.\n", fault_addr_void);
+        _exit(1);
+    }
+
+    /* Map the page (temporary RWX to copy) */
+    void *m = mmap((void*)page_start, PAGE_SIZE,
+                   PROT_READ | PROT_WRITE | PROT_EXEC,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (m == MAP_FAILED) {
+        perror("mmap in handler");
+        _exit(1);
+    }
+
+    ++page_allocs;
+    segments[seg_idx].pages_allocated += 1;
+    add_mapped_page((void*)page_start, seg_idx);
+
+    /* Correct overlap calculation:*/
+    uintptr_t seg_vstart = (uintptr_t)segments[seg_idx].p_vaddr;
+    uintptr_t seg_vfile_end = seg_vstart + (uintptr_t)segments[seg_idx].p_filesz;
+
+    uintptr_t overlap_start = (page_start > seg_vstart) ? page_start : seg_vstart;
+    uintptr_t overlap_end = (page_end < seg_vfile_end) ? page_end : seg_vfile_end;
+
+    size_t bytes_from_file = 0;
+    off_t file_offset = 0;
+    size_t write_offset_in_page = 0;
+
+    if (overlap_end > overlap_start) {
+        bytes_from_file = overlap_end - overlap_start;
+        file_offset = (off_t)segments[seg_idx].p_offset + (off_t)(overlap_start - seg_vstart);
+        write_offset_in_page = overlap_start - page_start;
+    } else {
+        bytes_from_file = 0;
+        write_offset_in_page = 0;
+    }
