@@ -224,3 +224,70 @@ static void load_elf_headers(const char *path) {
         si++;
     }
 }
+/* Compute internal fragmentation bytes */
+static unsigned long compute_internal_frag_bytes(void) {
+    unsigned long total = 0;
+    for (int i = 0; i < seg_count; ++i) {
+        unsigned long alloc_bytes = segments[i].pages_allocated * PAGE_SIZE;
+        if (alloc_bytes > segments[i].p_memsz) total += (alloc_bytes - segments[i].p_memsz);
+    }
+    return total;
+}
+
+
+/* Close ELF fd if open */
+static void close_elf_fd(void) {
+    if (elf_fd >= 0) {
+        close(elf_fd);
+        elf_fd = -1;
+    }
+}
+
+/* Free program headers */
+static void free_phdrs(void) {
+    if (phdrs) {
+        free(phdrs);
+        phdrs = NULL;
+        phnum = 0;
+    }
+}
+
+/* Free segment info */
+static void free_segments(void) {
+    if (segments) {
+        free(segments);
+        segments = NULL;
+        seg_count = 0;
+    }
+}
+
+/* Free mapped_pages array and reset its counters (does NOT unmap pages) */
+static void free_mapped_pages(void) {
+    if (mapped_pages) {
+        free(mapped_pages);
+        mapped_pages = NULL;
+    }
+    mapped_pages_capacity = 0;
+    mapped_pages_count = 0;
+}
+
+/* Unmap all mapped pages recorded in mapped_pages[]. */
+static void unmap_mapped_pages(void) {
+    for (size_t i = 0; i < mapped_pages_count; ++i) {
+        void *addr = mapped_pages[i].page_addr;
+        if (addr != NULL) {
+            /* PAGE_SIZE is global; assume it's set. */
+            if (munmap(addr, PAGE_SIZE) != 0) {
+                /* best-effort: use perror in normal flow only */
+                perror("munmap in unmap_mapped_pages");
+            }
+        }
+    }
+}
+
+/* Reset counters and any runtime state (does not free memory) */
+static void reset_state(void) {
+    page_faults = 0;
+    page_allocs = 0;
+    PAGE_SIZE = (PAGE_SIZE == 0) ? sysconf(_SC_PAGESIZE) : PAGE_SIZE;
+}
