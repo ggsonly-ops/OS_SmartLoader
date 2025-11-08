@@ -152,3 +152,75 @@ static void segv_handler(int sig, siginfo_t *si, void *unused) {
         bytes_from_file = 0;
         write_offset_in_page = 0;
     }
+    /* Read file bytes into the appropriate offset within the page */
+    if (bytes_from_file > 0) {
+        ssize_t rr = pread(elf_fd, (void*)((uintptr_t)page_start + write_offset_in_page), bytes_from_file, file_offset);
+        if (rr < 0) {
+            perror("pread in handler");
+            _exit(1);
+        }
+        if ((size_t)rr + write_offset_in_page < PAGE_SIZE) {
+            memset((void*)(page_start + (size_t)rr + write_offset_in_page), 0, PAGE_SIZE - (size_t)rr - write_offset_in_page);
+        }
+    } else {
+        memset((void*)page_start, 0, PAGE_SIZE);
+    }
+
+    int prot = elf_flags_to_prot(segments[seg_idx].p_flags);
+    if (mprotect((void*)page_start, PAGE_SIZE, prot) != 0) {
+        perror("mprotect in handler");
+        _exit(1);
+    }
+}
+
+/* Read ELF headers and populate segments[] for PT_LOAD entries */
+static void load_elf_headers(const char *path) {
+    if (elf_fd < 0) {
+        elf_fd = open(path, O_RDONLY);
+        if (elf_fd < 0) {
+            fatal_perror("open ELF");
+        }
+    }
+    if (pread(elf_fd, &ehdr, sizeof(ehdr), 0) != sizeof(ehdr)) {
+        fatal_perror("read elf header");
+    }
+    if (ehdr.e_ident[EI_MAG0] != ELFMAG0 ||
+        ehdr.e_ident[EI_MAG1] != ELFMAG1 ||
+        ehdr.e_ident[EI_MAG2] != ELFMAG2 ||
+        ehdr.e_ident[EI_MAG3] != ELFMAG3) {
+        fatal_msg("Not an ELF file");
+    }
+    if (ehdr.e_ident[EI_CLASS] != ELFCLASS32) {
+        fatal_msg("Only ELF32 supported");
+    }
+
+    phnum = ehdr.e_phnum;
+    if (phnum <= 0) {
+        fatal_msg("No program headers");
+    }
+
+    phdrs = malloc(phnum * sizeof(Elf32_Phdr));
+    if (!phdrs) { fatal_perror("malloc phdrs"); }
+    off_t ph_off = ehdr.e_phoff;
+    ssize_t want = phnum * sizeof(Elf32_Phdr);
+    ssize_t rr = pread(elf_fd, phdrs, want, ph_off);
+    if (rr != want) { fatal_perror("pread phdrs"); }
+
+    seg_count = 0;
+    for (int i = 0; i < phnum; ++i) {
+        if (phdrs[i].p_type == PT_LOAD) seg_count++;
+    }
+    segments = calloc(seg_count, sizeof(seginfo_t));
+    if (!segments) { fatal_perror("calloc segments"); }
+    int si = 0;
+    for (int i = 0; i < phnum; ++i) {
+        if (phdrs[i].p_type != PT_LOAD) continue;
+        segments[si].p_offset = phdrs[i].p_offset;
+        segments[si].p_vaddr  = phdrs[i].p_vaddr;
+        segments[si].p_filesz = phdrs[i].p_filesz;
+        segments[si].p_memsz  = phdrs[i].p_memsz;
+        segments[si].p_flags  = phdrs[i].p_flags;
+        segments[si].pages_allocated = 0;
+        si++;
+    }
+}
