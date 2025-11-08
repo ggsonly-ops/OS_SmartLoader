@@ -325,3 +325,17 @@ static int cleanup_and_exit(void) {
     return cleanup_and_return(0);
 }
 
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <ELF-program>\n", argv[0]);
+        return 1;
+    }
+
+    PAGE_SIZE = sysconf(_SC_PAGESIZE);
+    if (PAGE_SIZE == 0) PAGE_SIZE = 4096;
+
+    const char *elf_path = argv[1];
+    elf_fd = open(elf_path, O_RDONLY);
+    if (elf_fd < 0) { fatal_perror("open"); }
+
+    load_elf_headers(elf_path);
